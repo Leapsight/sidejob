@@ -249,8 +249,7 @@ worker_reg_name(Name, Id) ->
 %% @private
 %% We will make this configurable
 get_shard(Term, Ring) ->
-    <<Int:160/integer>>  = chash:key_of(Term),
-    Idx = chash:next_index(Int, Ring),
+    <<Idx:160/integer>>  = chash:key_of(Term),
     chash:lookup(Idx, Ring).
 
 
@@ -258,4 +257,4 @@ get_shard(Term, Ring) ->
 ring(N, Names) when length(Names) == N ->
     {N, L} = chash:fresh(N, 1),
     {Indices, _} = lists:unzip(L),
-    lists:zip(Indices, lists:seq(1, N)).
+    {N, lists:zip(Indices, lists:seq(1, N))}.
