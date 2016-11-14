@@ -250,7 +250,7 @@ worker_reg_name(Name, Id) ->
 %% We will make this configurable
 get_shard(Term, Ring) ->
     <<Idx:160/integer>>  = chash:key_of(Term),
-    chash:lookup(Idx, Ring).
+    chash:next_index(Idx, Ring).
 
 
 %% @private
