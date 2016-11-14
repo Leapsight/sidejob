@@ -20,6 +20,8 @@
 -module(sidejob).
 -export([new_resource/3, new_resource/4, call/2, call/3, cast/2,
          unbounded_cast/2, resource_exists/1]).
+        
+-export([new_sharded_resource/3, new_sharded_resource/4]).
 
 %%%===================================================================
 %%% API
@@ -40,6 +42,7 @@ new_resource(Name, Mod, Limit, Workers) ->
     StatsName = sidejob_resource_stats:reg_name(Name),
     WorkerLimit = Limit div Workers,
     sidejob_config:load_config(Name, [{width, Workers},
+                                      {is_sharded, false},
                                       {limit, Limit},
                                       {worker_limit, WorkerLimit},
                                       {stats_ets, StatsETS},
@@ -56,14 +59,67 @@ new_resource(Name, Mod, Limit) ->
     new_resource(Name, Mod, Limit, Workers).
 
 
+
+%% @doc
+%% Create a new sharded sidejob resource that uses the provided worker module,
+%% enforces the requested usage limit, and is managed by the specified
+%% number of worker processes.
+%% The number of workers should be a power of 2.
+%%
+%% This call will generate and load a new module, via {@link sidejob_config},
+%% that provides information about the new resource. It will also start up the
+%% supervision hierarchy that manages this resource: ensuring that the workers
+%% and stats aggregation server for this resource remain running.
+new_sharded_resource(Name, Mod, Limit, Workers) ->
+    %% We validate Workers is a power of 2
+    (Workers /= 0) andalso 
+    (Workers band (Workers - 1)) == 0 orelse
+    error(badarg, [Name, Mod, Limit, Workers]),
+
+    StatsETS = sidejob_resource_sup:stats_ets(Name),
+    WorkerNames = sidejob_worker:workers(Name, Workers),
+    StatsName = sidejob_resource_stats:reg_name(Name),
+    WorkerLimit = Limit div Workers,
+    sidejob_config:load_config(Name, [{width, Workers},
+                                      {is_sharded, true},
+                                      {ring, ring(Workers, WorkerNames)},
+                                      {limit, Limit},
+                                      {worker_limit, WorkerLimit},
+                                      {stats_ets, StatsETS},
+                                      {workers, list_to_tuple(WorkerNames)},
+                                      {worker_ets, list_to_tuple(WorkerNames)},
+                                      {stats, StatsName}]),
+    sidejob_sup:add_resource(Name, Mod).
+
+
+%% @doc
+%% Same as {@link new_sharded_resource/4} except that the number of workers defaults
+%% to the number of scheduler threads.
+new_sharded_resource(Name, Mod, Limit) ->
+    Workers = erlang:system_info(schedulers),
+    new_resource(Name, Mod, Limit, Workers).
+
 %% @doc
 %% Same as {@link call/3} with a default timeout of 5 seconds.
 call(Name, Msg) ->
     call(Name, Msg, 5000).
 
+
+
 %% @doc
 %% Perform a synchronous call to the specified resource, failing if the
 %% resource has reached its usage limit.
+call({Name, Key}, Msg, Timeout) ->
+    WorkerETS = Name:worker_ets(),
+    Limit = Name:worker_limit(),
+    Worker = get_shard(Key, Name:ring()),
+    case is_available(WorkerETS, Limit, Worker) of
+        true ->
+            gen_server:call(worker_reg_name(Name, Worker), Msg, Timeout);
+        false ->
+            overload
+    end;
+
 call(Name, Msg, Timeout) ->
     case available(Name) of
         none ->
@@ -72,9 +128,22 @@ call(Name, Msg, Timeout) ->
             gen_server:call(Worker, Msg, Timeout)
     end.
 
+
+
 %% @doc
 %% Perform an asynchronous cast to the specified resource, failing if the
 %% resource has reached its usage limit.
+cast({Name, Key}, Msg) ->
+    WorkerETS = Name:worker_ets(),
+    Limit = Name:worker_limit(),
+    Worker = get_shard(Key, Name:ring()),
+    case is_available(WorkerETS, Limit, Worker) of
+        true ->
+            gen_server:cast(worker_reg_name(Name, Worker), Msg);
+        false ->
+            overload
+    end;
+
 cast(Name, Msg) ->
     case available(Name) of
         none ->
@@ -83,12 +152,19 @@ cast(Name, Msg) ->
             gen_server:cast(Worker, Msg)
     end.
 
+
 %% @doc
 %% Perform an asynchronous cast to the specified resource, ignoring
 %% usage limits
+unbounded_cast({Name, Key}, Msg) ->
+    Worker = get_shard(Key, Name:ring()),
+    gen_server:cast(worker_reg_name(Name, Worker), Msg);
+
 unbounded_cast(Name, Msg) ->
     Worker = preferred_worker(Name),
     gen_server:cast(Worker, Msg).
+
+
 
 %%% @doc
 %% Check if the specified resource exists. Erlang docs call out that
@@ -114,6 +190,8 @@ preferred_worker(Name) ->
     Scheduler = erlang:system_info(scheduler_id),
     Worker = Scheduler rem Width,
     worker_reg_name(Name, Worker).
+
+
 
 %% Find an available worker or return none if all workers at limit
 available(Name) ->
@@ -158,3 +236,26 @@ is_available(WorkerETS, Limit, Worker) ->
 
 worker_reg_name(Name, Id) ->
     element(Id+1, Name:workers()).
+
+
+
+
+
+
+%% =============================================================================
+%% PRIVATE: SHARD RESOURCE
+%% =============================================================================
+
+%% @private
+%% We will make this configurable
+get_shard(Term, Ring) ->
+    <<Int:160/integer>>  = chash:key_of(Term),
+    Idx = chash:next_index(Int, Ring),
+    chash:lookup(Idx, Ring).
+
+
+%% @private
+ring(N, Names) when length(Names) == N ->
+    {N, L} = chash:fresh(N, 1),
+    {Indices, _} = lists:unzip(L),
+    lists:zip(Indices, Names).
