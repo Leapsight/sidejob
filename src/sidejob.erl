@@ -258,4 +258,4 @@ get_shard(Term, Ring) ->
 ring(N, Names) when length(Names) == N ->
     {N, L} = chash:fresh(N, 1),
     {Indices, _} = lists:unzip(L),
-    lists:zip(Indices, Names).
+    lists:zip(Indices, lists:seq(1, N)).
