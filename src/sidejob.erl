@@ -249,9 +249,9 @@ worker_reg_name(Name, Id) ->
 %% @private
 %% We will make this configurable
 get_shard(Term, Ring) ->
-    <<Idx:160/integer>>  = chash:key_of(Term),
-    chash:next_index(Idx, Ring).
-
+    <<Int:160/integer>>  = chash:key_of(Term),
+    Idx = chash:next_index(Int, Ring),
+    chash:lookup(Idx, Ring).
 
 %% @private
 ring(N, Names) when length(Names) == N ->
