@@ -113,7 +113,7 @@ call({Name, Key}, Msg, Timeout) ->
     WorkerETS = Name:worker_ets(),
     Limit = Name:worker_limit(),
     Worker = get_shard(Key, Name:ring()),
-    case is_available(WorkerETS, Limit, Worker) of
+    case is_shard_available(WorkerETS, Limit, Worker) of
         true ->
             gen_server:call(worker_reg_name(Name, Worker), Msg, Timeout);
         false ->
@@ -137,7 +137,7 @@ cast({Name, Key}, Msg) ->
     WorkerETS = Name:worker_ets(),
     Limit = Name:worker_limit(),
     Worker = get_shard(Key, Name:ring()),
-    case is_available(WorkerETS, Limit, Worker) of
+    case is_shard_available(WorkerETS, Limit, Worker) of
         true ->
             gen_server:cast(worker_reg_name(Name, Worker), Msg);
         false ->
@@ -219,8 +219,9 @@ available(Name, WorkerETS, Width, Limit, X, End) ->
             worker_reg_name(Name, Worker)
     end.
 
+
 is_available(WorkerETS, Limit, Worker) ->
-    ETS = element(Worker+1, WorkerETS),
+    ETS = element(Worker + 1, WorkerETS),
     case ets:lookup_element(ETS, full, 2) of
         1 ->
             false;
@@ -233,6 +234,23 @@ is_available(WorkerETS, Limit, Worker) ->
             end,
             true
     end.
+
+
+is_shard_available(WorkerETS, Limit, Worker) ->
+    ETS = element(Worker, WorkerETS),
+    case ets:lookup_element(ETS, full, 2) of
+        1 ->
+            false;
+        0 ->
+            Value = ets:update_counter(ETS, usage, 1),
+            if Value >= Limit ->
+                    ets:insert(ETS, {full, 1});
+               true ->
+                    ok
+            end,
+            true
+    end.
+
 
 worker_reg_name(Name, Id) ->
     element(Id+1, Name:workers()).
